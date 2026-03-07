@@ -102,6 +102,13 @@ class TestBrfCharToCode:
 
     def test_case_insensitive(self):
         assert brf_char_to_code('a') == brf_char_to_code('A')
+
+    def test_liblouis_lowercase_brf(self):
+        # Liblouis outputs {|}~ instead of [\]^
+        assert brf_char_to_code('{') == brf_char_to_code('[')   # dots 2,4,6 = "ow"
+        assert brf_char_to_code('|') == brf_char_to_code('\\')  # dots 1,2,5,6 = "ou"
+        assert brf_char_to_code('}') == brf_char_to_code(']')   # dots 1,2,4,5,6 = "er"
+        assert brf_char_to_code('~') == brf_char_to_code('^')   # dots 4,5
         assert brf_char_to_code('z') == brf_char_to_code('Z')
 
 

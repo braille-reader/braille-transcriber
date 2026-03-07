@@ -126,6 +126,67 @@ Example:
 Alice was beginning
 ```
 
+## Model Architecture Decision: Fine-tune T5-small
+
+### The Problem
+
+We need a model that translates cell code sequences → English text. This is a sequence-to-sequence translation problem with a 64-token source vocabulary.
+
+### Options Considered
+
+| Option | Approach | Pros | Cons |
+|--------|----------|------|------|
+| A | Train Seq2Seq Transformer from scratch | Full control, small model | 28K sentences may not be enough; must learn English from scratch |
+| B | Fine-tune T5-small (60M params) | Already knows English; 28K is sufficient for fine-tuning | Need custom input tokens |
+| C | Fine-tune T5-base (220M params) | More capacity | Overkill; risk of overfitting on 28K examples |
+| D | Fine-tune decoder-only (GPT-2) | Simple | Encoder-decoder is better fit for translation |
+
+### Decision: T5-small
+
+**Why fine-tuning beats training from scratch:**
+The model must simultaneously learn (1) cell code → contraction mapping, (2) English grammar/vocabulary, and (3) context-dependent resolution. A pretrained model already knows (2) and (3). With 28K examples, it only needs to learn (1) — a much smaller problem.
+
+**Why T5-small specifically:**
+- Encoder-decoder is the natural architecture for translation
+- 60M params fine-tunes well on 28K examples (T5-base risks overfitting)
+- Already knows English spelling, grammar, vocabulary
+- Trainable on a single GPU or even CPU
+- Well-supported in HuggingFace
+
+### Input Representation: Custom Tokens
+
+Add 64 special tokens (`c0` through `c63`) to the T5 tokenizer. Each braille cell maps to exactly one input token.
+
+```
+Input:  c32 c1 c7 c10 c9 c17 c0 c58 c1 c14
+Output: Alice was
+```
+
+Why custom tokens over raw numbers:
+- Avoids subword splitting ("46" → "4"+"6")
+- Clean 1:1 mapping: one braille cell = one model token
+- Model learns dedicated embeddings for each cell pattern
+
+### Training Data Strategy
+
+**Start with current 28K sentences.** This is sufficient for fine-tuning T5-small. Do not collect more data upfront.
+
+**After baseline evaluation**, use error analysis to guide targeted data collection:
+- If the model fails on modern language → add contemporary text (news, Wikipedia)
+- If it fails on short utterances → add dialogue and headings
+- If synthetic-only bias is a problem → add real BRF↔Gutenberg aligned data
+
+**Current corpus limitation:** All 5 books are 19th-century literary fiction. Adding more classics of the same style won't help — variety matters more than volume.
+
+### Evaluation Plan
+
+- **Synthetic test set** (5% hold-out): Measures learning of liblouis patterns
+- **Jellybean manual data**: Measures generalization to real human transcription
+- **Baseline comparison**: liblouis `backTranslateString()` on the same test sets
+- **Goal**: Outperform liblouis back-translation, especially on context-dependent contractions
+
+---
+
 ## Data Sources
 
 ### 1. BRF Files (Real Contracted Braille)

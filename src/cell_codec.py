@@ -98,9 +98,14 @@ def code_to_dots(code: int) -> list[int]:
     return [d + 1 for d in range(6) if code & (1 << d)]
 
 
+# Liblouis outputs lowercase BRF where `{|}~ map to the same cells as @[\]^
+_LOWERCASE_BRF_MAP = {'`': '@', '{': '[', '|': '\\', '}': ']', '~': '^'}
+
+
 def brf_char_to_code(char: str) -> int:
-    """Convert a BRF ASCII character to cell code. Case-insensitive."""
-    return _BRF_TO_CODE[char.upper()]
+    """Convert a BRF ASCII character to cell code. Handles both upper and lowercase BRF."""
+    char = _LOWERCASE_BRF_MAP.get(char, char).upper()
+    return _BRF_TO_CODE[char]
 
 
 def code_to_brf_char(code: int) -> str:
