@@ -3,7 +3,9 @@
 # External repos (cloned as dependencies)
 DotNeuralNet/
 
-# Generated/synthetic data (too large for git)
+# Training data sources (large / restricted access — see data/README.md)
+data/brf/
+data/gutenberg/
 data/synthetic/
 
 # Local config (contains API keys / local paths)
