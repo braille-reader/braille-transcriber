@@ -287,7 +287,7 @@ Interested in collaborating? Areas where help is needed:
 
 ## 📄 License
 
-TBD - Will likely use permissive license (MIT/Apache 2.0) for code and CC-BY for datasets to maximize community benefit.
+This project is licensed under the [MIT License](LICENSE).
 
 ---
 
