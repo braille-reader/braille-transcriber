@@ -30,22 +30,40 @@
 - [x] Gutenberg header/footer stripping, sentence splitting
 - [x] Validated: Liblouis output closely matches real Bookshare BRF
 - [x] Generated synthetic training data from 5 books (27,930 sentences, 2.16M cells)
-- [x] Test suite: 44 tests passing (cell codec + data generator)
+
+### Training Pipeline (March 2026)
+- [x] Data preparation script (tools/prepare_data.py)
+- [x] Converted jellybean manual data to training format
+- [x] Split synthetic data: train (25,138) / val (1,396) / test (1,396)
+- [x] Jellybean held out as real-world test set (42 pairs)
+- [x] T5 format with custom tokens: c0-c63 for 64 braille cells
+- [x] T5-small fine-tuning pipeline (src/trainer.py)
+- [x] MPS (Apple Silicon), CUDA, CPU device support
+- [x] Gradient accumulation for small-memory training
+- [x] Best model checkpointing by validation loss
+- [x] Test suite: 67 tests passing (cell codec + data generator + prepare data + trainer)
+- [x] Evaluation script (tools/evaluate.py)
+
+### T5-small v1 Training Run (March 2026)
+- [x] Ran T5-small fine-tuning: 5 epochs, lr=3e-4, batch=4, grad_accum=8
+- [x] Evaluated on synthetic test set: 2.9% exact match (40/1396)
+- [x] Evaluated on jellybean held-out: 0% exact match (0/42)
+- [x] Result: model did not learn the task — outputs memorized English phrases
+- [x] Root cause analysis: no LR warmup/scheduler, static padding, insufficient epochs
+- [x] Evaluation report written (docs/evaluation-report-v1.md)
 
 ---
 
 ## Current Focus
 
-### Prepare Training/Validation Sets
-- [ ] Convert jellybean_jungle.txt to training format (cell codes + English)
-- [ ] Split synthetic data into train/val/test sets
-- [ ] Use manual data (jellybean) as held-out validation
-
-### Seq2Seq Translation Model
-- [ ] Design model architecture (cell code sequences → English text)
-- [ ] Training pipeline
-- [ ] Evaluate against manual test data
-- [ ] Compare model output vs liblouis back-translation
+### Fix Training Pipeline (v2)
+- [ ] Add learning rate scheduler (linear warmup + cosine decay)
+- [ ] Switch to dynamic padding (pad to longest in batch, not max_length)
+- [ ] Lower learning rate to 1e-4
+- [ ] Increase epochs to 10
+- [ ] Re-run training
+- [ ] Evaluate v2 on synthetic test set and jellybean
+- [ ] Compare against liblouis back-translation baseline
 
 ---
 
@@ -96,3 +114,4 @@
 - Cell codes (0-63) are the best canonical representation — BRF and dot patterns both convert trivially
 - BRF from Bookshare represents real professional transcriptions (may differ from Liblouis)
 - 5 public domain books yield ~28K training sentences with 2.16M braille cells
+- T5-small v1 failed (2.9% accuracy) — needs LR warmup, dynamic padding, more epochs

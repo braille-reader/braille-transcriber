@@ -8,6 +8,7 @@ data/brf/
 data/gutenberg/
 data/synthetic/
 data/prepared/
+models/
 
 # Local config (contains API keys / local paths)
 .mcp.json
