@@ -2,9 +2,9 @@
 Prepare training data for T5 fine-tuning.
 
 Converts raw data sources into T5-ready format:
-  - Jellybean manual data (dot notation + English) → cell codes + English
+  - Jellybean manual data (dot notation + English) → Unicode braille + English
   - Synthetic .train files (cell codes + English) → train/val/test splits
-  - Output: T5 token format (c0 c46 c1 ...) paired with English text
+  - Output: "translate Braille to English: ⠁⠃⠉" paired with English text
 """
 
 import os
@@ -19,6 +19,9 @@ _codec_spec = importlib.util.spec_from_file_location(
 _codec = importlib.util.module_from_spec(_codec_spec)
 _codec_spec.loader.exec_module(_codec)
 dot_notation_to_codes = _codec.dot_notation_to_codes
+codes_to_unicode = _codec.codes_to_unicode
+
+TASK_PREFIX = "translate Braille to English: "
 
 
 def parse_jellybean(text: str) -> list[tuple[list[int], str]]:
@@ -109,12 +112,13 @@ def split_data(
 def to_t5_format(pairs: list[tuple[list[int], str]]) -> list[tuple[str, str]]:
     """Convert (cell_codes, english) pairs to T5 input/output strings.
 
-    Input format: "c32 c1 c7"
+    Input format: "translate Braille to English: ⠁⠃⠉"
     Output format: "Alice"
     """
     rows = []
     for codes, english in pairs:
-        input_str = ' '.join(f'c{c}' for c in codes)
+        braille_str = codes_to_unicode(codes)
+        input_str = f"{TASK_PREFIX}{braille_str}"
         rows.append((input_str, english))
     return rows
 

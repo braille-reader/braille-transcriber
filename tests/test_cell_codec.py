@@ -16,6 +16,8 @@ brf_char_to_code = _mod.brf_char_to_code
 code_to_brf_char = _mod.code_to_brf_char
 dot_notation_to_codes = _mod.dot_notation_to_codes
 brf_line_to_codes = _mod.brf_line_to_codes
+code_to_unicode = _mod.code_to_unicode
+codes_to_unicode = _mod.codes_to_unicode
 
 
 class TestDotsToCode:
@@ -248,3 +250,39 @@ class TestAliceBrfConversion:
         assert codes[3] == 29   # N
         assert codes[4] == 0    # space
         assert codes[5] == 46   # ! = the
+
+
+class TestCodeToUnicode:
+    """Test cell code to Unicode braille character conversion."""
+
+    def test_empty_cell(self):
+        assert code_to_unicode(0) == '\u2800'  # Braille blank
+
+    def test_dot_1(self):
+        assert code_to_unicode(1) == '\u2801'  # ⠁
+
+    def test_all_dots(self):
+        assert code_to_unicode(63) == '\u283f'  # ⠿
+
+    def test_known_patterns(self):
+        # A = dot 1 = code 1 = U+2801
+        assert code_to_unicode(1) == '⠁'
+        # B = dots 1,2 = code 3 = U+2803
+        assert code_to_unicode(3) == '⠃'
+        # "the" contraction = dots 2,3,4,6 = code 46 = U+282E
+        assert code_to_unicode(46) == '⠮'
+
+
+class TestCodesToUnicode:
+    def test_hello(self):
+        # h=19, e=17, l=7, l=7, o=21
+        result = codes_to_unicode([19, 17, 7, 7, 21])
+        assert len(result) == 5
+        assert all(0x2800 <= ord(c) <= 0x283f for c in result)
+
+    def test_with_space(self):
+        result = codes_to_unicode([1, 0, 3])
+        assert result[1] == '\u2800'  # space = blank braille
+
+    def test_empty(self):
+        assert codes_to_unicode([]) == ''
