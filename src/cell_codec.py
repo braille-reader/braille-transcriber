@@ -134,3 +134,13 @@ def dot_notation_to_codes(line: str) -> list[int]:
 def brf_line_to_codes(line: str) -> list[int]:
     """Convert a line of BRF text to cell codes."""
     return [brf_char_to_code(ch) for ch in line]
+
+
+def code_to_unicode(code: int) -> str:
+    """Convert cell code (0-63) to Unicode Braille character (U+2800-U+283F)."""
+    return chr(0x2800 + code)
+
+
+def codes_to_unicode(codes: list[int]) -> str:
+    """Convert list of cell codes to Unicode Braille string."""
+    return ''.join(code_to_unicode(c) for c in codes)

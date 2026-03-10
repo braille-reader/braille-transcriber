@@ -22,6 +22,7 @@ parse_jellybean = _prep.parse_jellybean
 load_synthetic = _prep.load_synthetic
 split_data = _prep.split_data
 to_t5_format = _prep.to_t5_format
+TASK_PREFIX = _prep.TASK_PREFIX
 
 
 class TestParseJellybean:
@@ -127,20 +128,28 @@ class TestSplitData:
 class TestToT5Format:
     """Convert (cell_codes, english) pairs to T5 input/output strings."""
 
-    def test_format(self):
-        pairs = [([32, 1, 7], "Alice")]
+    def test_format_uses_unicode_braille(self):
+        pairs = [([1, 3, 9], "abc")]
         rows = to_t5_format(pairs)
         assert len(rows) == 1
-        assert rows[0] == ("c32 c1 c7", "Alice")
+        source, target = rows[0]
+        # Cell code 1 = U+2801, 3 = U+2803, 9 = U+2809
+        assert source == f"{TASK_PREFIX}\u2801\u2803\u2809"
+        assert target == "abc"
 
     def test_space_cell(self):
         pairs = [([19, 0, 17], "h e")]
         rows = to_t5_format(pairs)
-        assert rows[0][0] == "c19 c0 c17"
+        source = rows[0][0]
+        # Cell code 0 = U+2800 (blank braille)
+        assert source == f"{TASK_PREFIX}\u2813\u2800\u2811"
+
+    def test_task_prefix_present(self):
+        pairs = [([1], "a")]
+        rows = to_t5_format(pairs)
+        assert rows[0][0].startswith("translate Braille to English: ")
 
     def test_multiple(self):
         pairs = [([1], "a"), ([3], "b")]
         rows = to_t5_format(pairs)
         assert len(rows) == 2
-        assert rows[0] == ("c1", "a")
-        assert rows[1] == ("c3", "b")

@@ -1,38 +1,49 @@
 """
-T5-small fine-tuning pipeline for braille cell codes → English translation.
+T5-small fine-tuning pipeline for braille → English translation.
 
-Expects TSV input files with format: c32 c1 c7<TAB>English text
+Uses Seq2SeqTrainer with:
+  - Unicode braille input (U+2800-U+283F) instead of custom tokens
+  - Task prefix: "translate Braille to English: "
+  - Dynamic padding via DataCollatorForSeq2Seq
+  - LR warmup (10%) + cosine decay
+  - Gradient clipping (max_norm=1.0)
+
+Expects TSV input: "translate Braille to English: ⠁⠃⠉"<TAB>English text
 """
 
 import os
 import torch
-from torch.utils.data import Dataset, DataLoader
-from transformers import T5ForConditionalGeneration, T5Tokenizer
+from torch.utils.data import Dataset
+from transformers import (
+    T5ForConditionalGeneration,
+    T5Tokenizer,
+    Seq2SeqTrainer,
+    Seq2SeqTrainingArguments,
+    DataCollatorForSeq2Seq,
+)
 
-
-CELL_TOKENS = [f"c{i}" for i in range(64)]
 MODEL_NAME = "t5-small"
 
 
 def setup_tokenizer(model_name: str = MODEL_NAME) -> T5Tokenizer:
-    """Load T5 tokenizer and add 64 custom braille cell tokens."""
-    tokenizer = T5Tokenizer.from_pretrained(model_name)
-    tokenizer.add_tokens(CELL_TOKENS)
-    return tokenizer
+    """Load T5 tokenizer. No custom tokens needed — Unicode braille is already in vocab."""
+    return T5Tokenizer.from_pretrained(model_name)
 
 
 def setup_model(tokenizer: T5Tokenizer, model_name: str = MODEL_NAME) -> T5ForConditionalGeneration:
-    """Load T5 model and resize embeddings for custom tokens."""
-    model = T5ForConditionalGeneration.from_pretrained(model_name)
-    model.resize_token_embeddings(len(tokenizer))
-    return model
+    """Load T5 model."""
+    return T5ForConditionalGeneration.from_pretrained(model_name)
 
 
 class BrailleDataset(Dataset):
-    """Dataset for braille→English translation from TSV files."""
+    """Dataset for braille→English translation from TSV files.
+
+    Returns un-padded tokenized sequences; padding is handled
+    per-batch by DataCollatorForSeq2Seq.
+    """
 
     def __init__(self, tsv_path: str, tokenizer: T5Tokenizer,
-                 max_source_len: int = 128, max_target_len: int = 256):
+                 max_source_len: int = 512, max_target_len: int = 256):
         self.tokenizer = tokenizer
         self.max_source_len = max_source_len
         self.max_target_len = max_target_len
@@ -55,26 +66,18 @@ class BrailleDataset(Dataset):
             source,
             max_length=self.max_source_len,
             truncation=True,
-            padding="max_length",
-            return_tensors="pt",
         )
 
         target_enc = self.tokenizer(
             target,
             max_length=self.max_target_len,
             truncation=True,
-            padding="max_length",
-            return_tensors="pt",
         )
 
-        labels = target_enc["input_ids"].squeeze()
-        # Replace padding token ids with -100 so they're ignored in loss
-        labels[labels == self.tokenizer.pad_token_id] = -100
-
         return {
-            "input_ids": source_enc["input_ids"].squeeze(),
-            "attention_mask": source_enc["attention_mask"].squeeze(),
-            "labels": labels,
+            "input_ids": source_enc["input_ids"],
+            "attention_mask": source_enc["attention_mask"],
+            "labels": target_enc["input_ids"],
         }
 
 
@@ -96,88 +99,69 @@ def train(
     train_path: str,
     val_path: str,
     output_dir: str,
-    epochs: int = 5,
+    epochs: int = 10,
     batch_size: int = 4,
     grad_accum_steps: int = 8,
-    lr: float = 3e-4,
-    max_source_len: int = 128,
+    lr: float = 1e-4,
+    max_source_len: int = 512,
     max_target_len: int = 256,
 ):
-    """Fine-tune T5-small on braille→English data."""
+    """Fine-tune T5-small on braille→English data using Seq2SeqTrainer."""
     device = get_device()
     print(f"Device: {device}")
 
     tokenizer = setup_tokenizer()
     model = setup_model(tokenizer)
-    model.to(device)
 
     train_ds = BrailleDataset(train_path, tokenizer, max_source_len, max_target_len)
     val_ds = BrailleDataset(val_path, tokenizer, max_source_len, max_target_len)
 
-    train_loader = DataLoader(train_ds, batch_size=batch_size, shuffle=True)
-    val_loader = DataLoader(val_ds, batch_size=batch_size)
-
-    optimizer = torch.optim.AdamW(model.parameters(), lr=lr)
-
     print(f"Train: {len(train_ds)} samples, Val: {len(val_ds)} samples")
     print(f"Batch size: {batch_size}, Grad accum: {grad_accum_steps}, Effective batch: {batch_size * grad_accum_steps}")
-    print(f"Epochs: {epochs}")
+    print(f"Epochs: {epochs}, LR: {lr}")
 
-    best_val_loss = float('inf')
-    os.makedirs(output_dir, exist_ok=True)
+    data_collator = DataCollatorForSeq2Seq(
+        tokenizer=tokenizer,
+        model=model,
+        padding=True,
+    )
 
-    for epoch in range(epochs):
-        # Training
-        model.train()
-        total_loss = 0
-        optimizer.zero_grad()
+    use_fp16 = torch.cuda.is_available()
 
-        for step, batch in enumerate(train_loader):
-            input_ids = batch["input_ids"].to(device)
-            attention_mask = batch["attention_mask"].to(device)
-            labels = batch["labels"].to(device)
+    training_args = Seq2SeqTrainingArguments(
+        output_dir=output_dir,
+        num_train_epochs=epochs,
+        per_device_train_batch_size=batch_size,
+        per_device_eval_batch_size=batch_size,
+        gradient_accumulation_steps=grad_accum_steps,
+        learning_rate=lr,
+        warmup_ratio=0.1,
+        lr_scheduler_type="cosine",
+        eval_strategy="epoch",
+        save_strategy="epoch",
+        save_total_limit=2,
+        load_best_model_at_end=True,
+        metric_for_best_model="eval_loss",
+        logging_steps=50,
+        fp16=use_fp16,
+        max_grad_norm=1.0,
+    )
 
-            outputs = model(input_ids=input_ids, attention_mask=attention_mask, labels=labels)
-            loss = outputs.loss / grad_accum_steps
-            loss.backward()
+    trainer = Seq2SeqTrainer(
+        model=model,
+        args=training_args,
+        train_dataset=train_ds,
+        eval_dataset=val_ds,
+        data_collator=data_collator,
+    )
 
-            if (step + 1) % grad_accum_steps == 0 or (step + 1) == len(train_loader):
-                optimizer.step()
-                optimizer.zero_grad()
-
-            total_loss += outputs.loss.item()
-
-            if (step + 1) % 100 == 0:
-                avg = total_loss / (step + 1)
-                print(f"  Epoch {epoch+1} step {step+1}/{len(train_loader)} loss={avg:.4f}")
-
-        train_loss = total_loss / len(train_loader)
-
-        # Validation
-        model.eval()
-        val_loss = 0
-        with torch.no_grad():
-            for batch in val_loader:
-                input_ids = batch["input_ids"].to(device)
-                attention_mask = batch["attention_mask"].to(device)
-                labels = batch["labels"].to(device)
-                outputs = model(input_ids=input_ids, attention_mask=attention_mask, labels=labels)
-                val_loss += outputs.loss.item()
-
-        val_loss /= len(val_loader)
-        print(f"Epoch {epoch+1}/{epochs}: train_loss={train_loss:.4f} val_loss={val_loss:.4f}")
-
-        # Save best model
-        if val_loss < best_val_loss:
-            best_val_loss = val_loss
-            model.save_pretrained(os.path.join(output_dir, "best"))
-            tokenizer.save_pretrained(os.path.join(output_dir, "best"))
-            print(f"  Saved best model (val_loss={val_loss:.4f})")
+    trainer.train()
 
     # Save final model
-    model.save_pretrained(os.path.join(output_dir, "final"))
-    tokenizer.save_pretrained(os.path.join(output_dir, "final"))
-    print(f"Training complete. Models saved to {output_dir}/")
+    final_dir = os.path.join(output_dir, "final")
+    trainer.save_model(final_dir)
+    tokenizer.save_pretrained(final_dir)
+    print(f"Training complete. Best model saved to {final_dir}/")
 
 
 if __name__ == '__main__':
@@ -186,12 +170,12 @@ if __name__ == '__main__':
     parser = argparse.ArgumentParser(description="Train braille→English T5 model")
     parser.add_argument("--train", default="data/prepared/train.tsv")
     parser.add_argument("--val", default="data/prepared/val.tsv")
-    parser.add_argument("--output", default="models/braille-t5")
-    parser.add_argument("--epochs", type=int, default=5)
+    parser.add_argument("--output", default="models/braille-t5-v2")
+    parser.add_argument("--epochs", type=int, default=10)
     parser.add_argument("--batch-size", type=int, default=4)
     parser.add_argument("--grad-accum", type=int, default=8)
-    parser.add_argument("--lr", type=float, default=3e-4)
-    parser.add_argument("--max-source-len", type=int, default=128)
+    parser.add_argument("--lr", type=float, default=1e-4)
+    parser.add_argument("--max-source-len", type=int, default=512)
     parser.add_argument("--max-target-len", type=int, default=256)
     args = parser.parse_args()
 
