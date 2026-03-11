@@ -1,32 +1,62 @@
 """
-Evaluate trained braille→English T5 model on test data.
+Evaluate braille→English model predictions.
 
-Loads the best checkpoint and runs inference on test and jellybean sets.
-Reports exact match, character error rate (CER), and BLEU score.
+Reads prediction TSVs (from Colab GPU inference) and computes:
+- Raw and normalized exact match
+- Character error rate (CER)
+- BLEU score
+- Liblouis back-translation baseline comparison
+- Error analysis (severity, patterns, length correlation)
+
+Usage:
+    python tools/evaluate.py data/predictions_test.tsv data/predictions_jellybean.tsv
+    python tools/evaluate.py data/predictions_jellybean.tsv --samples 42
 """
 
 import os
-import torch
-from transformers import AutoTokenizer, AutoModelForSeq2SeqLM
+import sys
+import math
+import argparse
+import importlib.util
+
+# Import cell_codec directly to avoid src/__init__.py triggering detector import
+_codec_spec = importlib.util.spec_from_file_location(
+    'cell_codec',
+    os.path.join(os.path.dirname(__file__), '..', 'src', 'cell_codec.py')
+)
+cell_codec = importlib.util.module_from_spec(_codec_spec)
+_codec_spec.loader.exec_module(cell_codec)
 
 
-def load_tsv(path: str) -> list[tuple[str, str]]:
-    pairs = []
-    with open(path) as f:
-        for line in f:
-            line = line.strip()
-            if '\t' in line:
-                source, target = line.split('\t', 1)
-                pairs.append((source, target))
-    return pairs
+# ---------------------------------------------------------------------------
+# Text normalization
+# ---------------------------------------------------------------------------
+
+def normalize_quotes(text):
+    """Normalize smart/curly quotes and dashes to ASCII equivalents."""
+    replacements = {
+        '\u2018': "'",   # left single quote
+        '\u2019': "'",   # right single quote
+        '\u201C': '"',   # left double quote
+        '\u201D': '"',   # right double quote
+        '\u2013': '-',   # en dash
+        '\u2014': '--',  # em dash
+        '\u2026': '...', # ellipsis
+    }
+    for old, new in replacements.items():
+        text = text.replace(old, new)
+    return text
 
 
-def char_error_rate(predicted: str, expected: str) -> float:
-    """Compute character error rate using edit distance."""
+# ---------------------------------------------------------------------------
+# Metrics
+# ---------------------------------------------------------------------------
+
+def char_error_rate(predicted, expected):
+    """Character error rate via edit distance."""
     n = len(expected)
     if n == 0:
         return 0.0 if len(predicted) == 0 else 1.0
-
     m = len(predicted)
     dp = list(range(m + 1))
     for i in range(1, n + 1):
@@ -38,112 +68,283 @@ def char_error_rate(predicted: str, expected: str) -> float:
     return dp[m] / n
 
 
-def bleu_score(predicted: str, expected: str) -> float:
-    """Simple sentence-level BLEU (4-gram) with brevity penalty."""
-    import math
-
+def bleu_score(predicted, expected):
+    """Sentence-level BLEU (4-gram) with brevity penalty."""
     pred_tokens = predicted.split()
     ref_tokens = expected.split()
-
     if len(pred_tokens) == 0:
         return 0.0
-
-    # Brevity penalty
-    bp = min(1.0, math.exp(1 - len(ref_tokens) / len(pred_tokens))) if len(pred_tokens) > 0 else 0.0
-
-    # N-gram precisions (1-4)
+    bp = min(1.0, math.exp(1 - len(ref_tokens) / len(pred_tokens)))
     log_avg = 0.0
     for n in range(1, 5):
         pred_ngrams = {}
         for i in range(len(pred_tokens) - n + 1):
             ng = tuple(pred_tokens[i:i + n])
             pred_ngrams[ng] = pred_ngrams.get(ng, 0) + 1
-
         ref_ngrams = {}
         for i in range(len(ref_tokens) - n + 1):
             ng = tuple(ref_tokens[i:i + n])
             ref_ngrams[ng] = ref_ngrams.get(ng, 0) + 1
-
-        clipped = sum(min(count, ref_ngrams.get(ng, 0)) for ng, count in pred_ngrams.items())
+        clipped = sum(min(c, ref_ngrams.get(ng, 0)) for ng, c in pred_ngrams.items())
         total = sum(pred_ngrams.values())
-
         if total == 0 or clipped == 0:
             return 0.0
         log_avg += math.log(clipped / total) / 4
-
     return bp * math.exp(log_avg)
 
 
-def evaluate(model_dir: str, test_files: list[str], num_samples: int = 10):
-    device = torch.device("mps" if torch.backends.mps.is_available() else
-                          "cuda" if torch.cuda.is_available() else "cpu")
-    print(f"Device: {device}")
+# ---------------------------------------------------------------------------
+# Liblouis baseline
+# ---------------------------------------------------------------------------
 
-    tokenizer = AutoTokenizer.from_pretrained(model_dir)
-    model = AutoModelForSeq2SeqLM.from_pretrained(model_dir)
-    model.to(device)
-    model.eval()
+def _setup_liblouis():
+    """Try to import liblouis. Returns (back_translate_fn, available_bool)."""
+    try:
+        import louis
+        tables = ['en-ueb-g2.ctb']
+        # Quick test
+        louis.backTranslateString(tables, ',MR4')
 
-    for test_file in test_files:
-        name = os.path.basename(test_file)
-        pairs = load_tsv(test_file)
-        print(f"\n{'='*60}")
-        print(f"  {name} ({len(pairs)} samples)")
-        print(f"{'='*60}")
+        def back_translate(braille_unicode):
+            try:
+                codes = [ord(ch) - 0x2800 for ch in braille_unicode
+                         if 0 <= ord(ch) - 0x2800 <= 63]
+                brf = ''.join(cell_codec.code_to_brf_char(c) for c in codes)
+                return louis.backTranslateString(tables, brf)
+            except Exception:
+                return None
 
-        show = min(num_samples, len(pairs))
-        correct = 0
-        total = len(pairs)
-        total_cer = 0.0
-        total_bleu = 0.0
+        return back_translate, True
+    except Exception as e:
+        print(f"  Liblouis not available ({e}) — skipping baseline.")
+        return lambda x: None, False
 
-        for i, (source, expected) in enumerate(pairs):
-            input_enc = tokenizer(source, return_tensors="pt", max_length=1024,
-                                  truncation=True).to(device)
 
-            with torch.no_grad():
-                output_ids = model.generate(
-                    input_ids=input_enc["input_ids"],
-                    attention_mask=input_enc["attention_mask"],
-                    max_length=256,
-                )
+# ---------------------------------------------------------------------------
+# Load predictions
+# ---------------------------------------------------------------------------
 
-            predicted = tokenizer.decode(output_ids[0], skip_special_tokens=True)
+def load_predictions(path):
+    """Load prediction TSV: braille<TAB>expected<TAB>predicted"""
+    rows = []
+    with open(path) as f:
+        header = f.readline()
+        for line in f:
+            line = line.rstrip('\n')
+            parts = line.split('\t', 2)
+            if len(parts) == 3:
+                rows.append({
+                    'braille': parts[0],
+                    'expected': parts[1],
+                    'predicted': parts[2],
+                })
+    return rows
 
-            is_match = predicted.strip() == expected.strip()
-            if is_match:
-                correct += 1
 
-            cer = char_error_rate(predicted.strip(), expected.strip())
-            bl = bleu_score(predicted.strip(), expected.strip())
-            total_cer += cer
-            total_bleu += bl
+# ---------------------------------------------------------------------------
+# Evaluation
+# ---------------------------------------------------------------------------
 
-            if i < show:
-                match = "OK" if is_match else "MISS"
-                print(f"\n[{i+1}] {match}  (CER={cer:.2f}, BLEU={bl:.2f})")
-                print(f"  Expected:  {expected}")
-                print(f"  Predicted: {predicted}")
+def evaluate_file(path, louis_fn, has_louis, num_samples=10):
+    """Run full evaluation on a predictions file."""
+    rows = load_predictions(path)
+    name = os.path.basename(path)
+    total = len(rows)
 
-        accuracy = correct / total * 100 if total > 0 else 0
-        avg_cer = total_cer / total if total > 0 else 0
-        avg_bleu = total_bleu / total if total > 0 else 0
+    if total == 0:
+        print(f"\n{name}: No predictions found.")
+        return []
 
-        print(f"\n--- {name} ---")
-        print(f"  Exact match: {correct}/{total} ({accuracy:.1f}%)")
-        print(f"  Avg CER:     {avg_cer:.3f}")
-        print(f"  Avg BLEU:    {avg_bleu:.3f}")
+    print(f"\n{'='*70}")
+    print(f"  {name} ({total} samples)")
+    print(f"{'='*70}")
+
+    results = []
+    for r in rows:
+        exp = r['expected'].strip()
+        pred = r['predicted'].strip()
+        exp_norm = normalize_quotes(exp)
+        pred_norm = normalize_quotes(pred)
+
+        louis_pred = louis_fn(r['braille'])
+        louis_norm = normalize_quotes(louis_pred.strip()) if louis_pred else None
+
+        result = {
+            'idx': len(results),
+            'expected': exp,
+            'predicted': pred,
+            'expected_norm': exp_norm,
+            'predicted_norm': pred_norm,
+            'raw_match': pred == exp,
+            'norm_match': pred_norm == exp_norm,
+            'cer': char_error_rate(pred_norm, exp_norm),
+            'bleu': bleu_score(pred_norm, exp_norm),
+            'louis_pred': louis_pred,
+            'louis_norm_match': (louis_norm.lower() == exp_norm.lower()) if louis_norm else None,
+            'louis_cer': char_error_rate(louis_norm.lower(), exp_norm.lower()) if louis_norm else None,
+        }
+        results.append(result)
+
+    # Show sample misses
+    misses = [r for r in results if not r['norm_match']]
+    show = min(num_samples, len(misses))
+    if show > 0:
+        print(f"\n--- Misses (showing {show}/{len(misses)}) ---")
+        for r in misses[:show]:
+            print(f"\n  [{r['idx']+1}] CER={r['cer']:.3f}  BLEU={r['bleu']:.2f}")
+            print(f"    Expected:  {r['expected']}")
+            print(f"    Predicted: {r['predicted']}")
+            if r['louis_pred']:
+                print(f"    Liblouis:  {r['louis_pred']}")
+
+    # Summary
+    raw_correct = sum(1 for r in results if r['raw_match'])
+    norm_correct = sum(1 for r in results if r['norm_match'])
+    avg_cer = sum(r['cer'] for r in results) / total
+    avg_bleu = sum(r['bleu'] for r in results) / total
+
+    print(f"\n  ByT5 model:")
+    print(f"    Raw exact match:     {raw_correct}/{total} ({raw_correct/total*100:.1f}%)")
+    print(f"    Normalized match:    {norm_correct}/{total} ({norm_correct/total*100:.1f}%)")
+    print(f"    Avg CER (norm):      {avg_cer:.4f}")
+    print(f"    Avg BLEU (norm):     {avg_bleu:.3f}")
+
+    if has_louis:
+        louis_results = [r for r in results if r['louis_norm_match'] is not None]
+        if louis_results:
+            louis_correct = sum(1 for r in louis_results if r['louis_norm_match'])
+            louis_avg_cer = sum(r['louis_cer'] for r in louis_results) / len(louis_results)
+            print(f"\n  Liblouis baseline (case-insensitive):")
+            print(f"    Exact match:         {louis_correct}/{len(louis_results)} ({louis_correct/len(louis_results)*100:.1f}%)")
+            print(f"    Avg CER:             {louis_avg_cer:.4f}")
+
+    return results
+
+
+def error_analysis(results, name):
+    """Categorize and analyze errors."""
+    misses = [r for r in results if not r['norm_match']]
+    total = len(results)
+
+    if not misses:
+        print(f"\n{name}: Perfect — no errors after normalization!")
+        return
+
+    print(f"\n{'='*70}")
+    print(f"  ERROR ANALYSIS: {name}")
+    print(f"  {len(misses)} errors out of {total} samples")
+    print(f"{'='*70}")
+
+    # Severity buckets
+    minor = [r for r in misses if r['cer'] < 0.1]
+    moderate = [r for r in misses if 0.1 <= r['cer'] < 0.3]
+    severe = [r for r in misses if r['cer'] >= 0.3]
+
+    print(f"\n  By severity:")
+    print(f"    Minor   (CER < 0.1):   {len(minor)}")
+    print(f"    Moderate (0.1-0.3):    {len(moderate)}")
+    print(f"    Severe  (CER >= 0.3):  {len(severe)}")
+
+    # CER distribution
+    cers = sorted([r['cer'] for r in misses])
+    print(f"\n  CER distribution of misses:")
+    print(f"    Min:    {cers[0]:.4f}")
+    print(f"    Median: {cers[len(cers)//2]:.4f}")
+    print(f"    Max:    {cers[-1]:.4f}")
+    print(f"    Mean:   {sum(cers)/len(cers):.4f}")
+
+    # Severe errors
+    if severe:
+        print(f"\n  --- Severe errors (CER >= 0.3) ---")
+        for r in severe:
+            print(f"\n  [{r['idx']+1}] CER={r['cer']:.3f}")
+            print(f"    Expected:  {r['expected'][:100]}")
+            print(f"    Predicted: {r['predicted'][:100]}")
+
+    # Common character-level differences
+    print(f"\n  --- Common character differences ---")
+    char_diffs = {}
+    for r in misses:
+        for ec, pc in zip(r['expected_norm'], r['predicted_norm']):
+            if ec != pc:
+                key = f"'{ec}'->'{pc}'"
+                char_diffs[key] = char_diffs.get(key, 0) + 1
+    for diff, count in sorted(char_diffs.items(), key=lambda x: -x[1])[:15]:
+        print(f"    {diff}: {count}x")
+
+    # Length correlation
+    miss_lens = [len(r['expected']) for r in misses]
+    all_lens = [len(r['expected']) for r in results]
+    print(f"\n  --- Length analysis ---")
+    print(f"    Avg length (all):    {sum(all_lens)/len(all_lens):.0f} chars")
+    print(f"    Avg length (misses): {sum(miss_lens)/len(miss_lens):.0f} chars")
+
+
+def print_summary(all_results):
+    """Print final summary table across all test sets."""
+    print(f"\n{'='*70}")
+    print(f"  FINAL SUMMARY — ByT5-small v3 Evaluation")
+    print(f"{'='*70}\n")
+
+    print(f"  {'Dataset':<25} {'N':>5} {'Raw Match':>12} {'Norm Match':>12} {'CER':>8} {'BLEU':>8}")
+    print(f"  {'-'*25} {'-'*5} {'-'*12} {'-'*12} {'-'*8} {'-'*8}")
+
+    for name, results in all_results:
+        t = len(results)
+        raw = sum(1 for r in results if r['raw_match'])
+        norm = sum(1 for r in results if r['norm_match'])
+        cer = sum(r['cer'] for r in results) / t
+        bleu = sum(r['bleu'] for r in results) / t
+        print(f"  {name:<25} {t:>5} "
+              f"{raw:>4}/{t} ({raw/t*100:4.1f}%) "
+              f"{norm:>4}/{t} ({norm/t*100:4.1f}%) "
+              f"{cer:>7.4f} {bleu:>7.3f}")
+
+    # Liblouis baseline table
+    has_any_louis = any(
+        any(r['louis_norm_match'] is not None for r in results)
+        for _, results in all_results
+    )
+    if has_any_louis:
+        print(f"\n  {'Dataset':<25} {'N':>5} {'Louis Match':>14} {'Louis CER':>12}")
+        print(f"  {'-'*25} {'-'*5} {'-'*14} {'-'*12}")
+        for name, results in all_results:
+            lr = [r for r in results if r['louis_norm_match'] is not None]
+            if lr:
+                lc = sum(1 for r in lr if r['louis_norm_match'])
+                lcer = sum(r['louis_cer'] for r in lr) / len(lr)
+                print(f"  {name:<25} {len(lr):>5} "
+                      f"{lc:>4}/{len(lr)} ({lc/len(lr)*100:4.1f}%) "
+                      f"{lcer:>11.4f}")
+        print(f"\n  Note: Liblouis comparison is case-insensitive (it outputs uppercase).")
+
+    print(f"\n  'Normalized' = after smart quote/dash normalization to ASCII.")
+
+
+def main():
+    parser = argparse.ArgumentParser(
+        description="Evaluate braille model predictions (from Colab) with liblouis baseline"
+    )
+    parser.add_argument("files", nargs="+",
+                        help="Prediction TSV files (braille<TAB>expected<TAB>predicted)")
+    parser.add_argument("--samples", type=int, default=10,
+                        help="Number of sample misses to display per file")
+    args = parser.parse_args()
+
+    louis_fn, has_louis = _setup_liblouis()
+    if has_louis:
+        print("  Liblouis ready for baseline comparison.")
+
+    all_results = []
+    for path in args.files:
+        results = evaluate_file(path, louis_fn, has_louis, args.samples)
+        if results:
+            error_analysis(results, os.path.basename(path))
+            all_results.append((os.path.basename(path), results))
+
+    if len(all_results) > 1:
+        print_summary(all_results)
 
 
 if __name__ == '__main__':
-    import argparse
-
-    parser = argparse.ArgumentParser(description="Evaluate braille→English model")
-    parser.add_argument("--model", default="models/braille-byt5-v3/final")
-    parser.add_argument("--samples", type=int, default=10,
-                        help="Number of sample predictions to display per file")
-    parser.add_argument("files", nargs="*",
-                        default=["data/prepared/test.tsv", "data/prepared/jellybean.tsv"])
-    args = parser.parse_args()
-
-    evaluate(args.model, args.files, args.samples)
+    main()

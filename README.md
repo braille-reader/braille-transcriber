@@ -2,9 +2,10 @@
 
 > A research-driven approach to building superior Braille OCR models with support for contracted Braille (Grade 2) and mathematical notation (Nemeth Code)
 
-**Status:** Phase 2 Complete — First Working Grade 2 Model (76% exact match, 0.01 CER)
+**Status:** Phase 2 Complete — First Working Grade 2 Model (92.9% normalized match, 0.004 CER)
 **Started:** January 19, 2026
 **Current Focus:** Evaluation & improvement of ByT5-small Grade 2 model
+**Model:** [prasanthmj/braille-byt5-v3 on Hugging Face](https://huggingface.co/prasanthmj/braille-byt5-v3)
 
 ---
 
@@ -12,7 +13,7 @@
 
 Build the first Braille OCR system that supports:
 - ✅ Grade 1 (Uncontracted Braille) - **Phase 1 Complete**
-- ✅ Grade 2 (Contracted Braille) - **First working model! 76% exact match**
+- ✅ Grade 2 (Contracted Braille) - **First working model! 92.9% exact match (normalized)**
 - 🔬 Nemeth Code (Mathematical Braille) - **Future Work**
 
 ### Why This Matters
@@ -36,6 +37,7 @@ Build the first Braille OCR system that supports:
 - **[v3 Training Run](docs/v3-training-run.md)** - ByT5-small training on A100: setup, results, analysis
 - **[v3 Proposal](docs/v3-proposal.md)** - ByT5 approach with research findings (BrailleLLM, etc.)
 - **[v3 Issues Log](docs/v3-issues-log.md)** - Infrastructure issues encountered and resolved
+- **[Evaluation Report v3](docs/evaluation-report-v3.md)** - ByT5-small: 92.9% real-world, 89.8% synthetic, vs liblouis baseline
 - **[Evaluation Report v1](docs/evaluation-report-v1.md)** - T5-small + custom tokens (2.9% accuracy)
 - **[Evaluation Report v2](docs/evaluation-report-v2.md)** - T5-small + Unicode braille (0% — tokenizer failure)
 - **[Implementation Log](docs/implementation-log.md)** - Development session notes and results
@@ -226,7 +228,7 @@ python transcribe.py image.jpg --confidence 0.25
 | Feature | Support | Real Usage | Status |
 |---------|---------|------------|--------|
 | Grade 1 | ✅ Yes | 5-10% | Phase 1 Complete |
-| Grade 2 | ✅ Initial (76% exact) | 90-95% | Phase 2 Complete, improving |
+| Grade 2 | ✅ Working (92.9% normalized match) | 90-95% | Phase 2 Complete, improving |
 | Nemeth | ❌ No | 3-5% | Phase 4 (Future) |
 
 **Bottom Line:** We now have the first working ML model for Grade 2 contracted braille — covering the 90-95% of real documents that no other system supports.
@@ -236,7 +238,7 @@ python transcribe.py image.jpg --confidence 0.25
 ## 💡 Key Insights from Research
 
 1. **Cell detection is solved** (98-99% accuracy with YOLOv8)
-2. **Grade 2 interpretation now working** (76% exact match with ByT5-small)
+2. **Grade 2 interpretation now working** (92.9% normalized match with ByT5-small) — [model on Hugging Face](https://huggingface.co/prasanthmj/braille-byt5-v3)
 3. **ByT5 is the right model** — byte-level processing handles Unicode braille natively (T5's tokenizer cannot)
 4. **Synthetic data generalizes** — model trained on Liblouis data works on real human-transcribed braille
 5. **Two-stage architecture is superior** (clean separation, easier debugging)
@@ -273,10 +275,12 @@ Interested in collaborating? Areas where help is needed:
 
 **March 11, 2026 — Grade 2 Model v3 (Breakthrough):**
 - ByT5-small trained on A100 80GB with bf16: val loss 0.008 after 10 epochs
-- **76.2% exact match on real-world jellybean held-out set (CER 0.01)**
-- 7/10 misses are smart quote differences only — true content accuracy ~93%
+- **92.9% normalized match on real-world held-out set (CER 0.004)**
+- **89.8% normalized match on synthetic test set (1,396 samples, CER 0.019)**
+- ~9x better than liblouis back-translation baseline (10.3% match, 0.260 CER)
 - Zero hallucinations — all predictions are correct and input-dependent
 - First working ML model for Grade 2 contracted braille
+- Model published: [prasanthmj/braille-byt5-v3 on Hugging Face](https://huggingface.co/prasanthmj/braille-byt5-v3)
 
 **March 2026 — Training Iterations (v1, v2):**
 - v1 (T5-small + custom tokens): 2.9% accuracy — random embeddings failed
@@ -319,5 +323,5 @@ This project is licensed under the [MIT License](LICENSE).
 ---
 
 **Project Start:** January 19, 2026
-**Status:** First working Grade 2 model (76% exact match, 0.01 CER)
-**Next Milestone:** Full evaluation + more training data + end-to-end pipeline
+**Status:** First working Grade 2 model (92.9% normalized match, 0.004 CER) — [Model on Hugging Face](https://huggingface.co/prasanthmj/braille-byt5-v3)
+**Next Milestone:** Web app for end-to-end testing + more training data
