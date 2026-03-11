@@ -7,7 +7,7 @@ Reports exact match, character error rate (CER), and BLEU score.
 
 import os
 import torch
-from transformers import T5ForConditionalGeneration, T5Tokenizer
+from transformers import AutoTokenizer, AutoModelForSeq2SeqLM
 
 
 def load_tsv(path: str) -> list[tuple[str, str]]:
@@ -79,8 +79,8 @@ def evaluate(model_dir: str, test_files: list[str], num_samples: int = 10):
                           "cuda" if torch.cuda.is_available() else "cpu")
     print(f"Device: {device}")
 
-    tokenizer = T5Tokenizer.from_pretrained(model_dir)
-    model = T5ForConditionalGeneration.from_pretrained(model_dir)
+    tokenizer = AutoTokenizer.from_pretrained(model_dir)
+    model = AutoModelForSeq2SeqLM.from_pretrained(model_dir)
     model.to(device)
     model.eval()
 
@@ -98,7 +98,7 @@ def evaluate(model_dir: str, test_files: list[str], num_samples: int = 10):
         total_bleu = 0.0
 
         for i, (source, expected) in enumerate(pairs):
-            input_enc = tokenizer(source, return_tensors="pt", max_length=512,
+            input_enc = tokenizer(source, return_tensors="pt", max_length=1024,
                                   truncation=True).to(device)
 
             with torch.no_grad():
@@ -139,7 +139,7 @@ if __name__ == '__main__':
     import argparse
 
     parser = argparse.ArgumentParser(description="Evaluate braille→English model")
-    parser.add_argument("--model", default="models/braille-t5-v2/final")
+    parser.add_argument("--model", default="models/braille-byt5-v3/final")
     parser.add_argument("--samples", type=int, default=10,
                         help="Number of sample predictions to display per file")
     parser.add_argument("files", nargs="*",

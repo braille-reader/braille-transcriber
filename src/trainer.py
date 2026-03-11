@@ -1,8 +1,9 @@
 """
-T5-small fine-tuning pipeline for braille → English translation.
+ByT5-small fine-tuning pipeline for braille → English translation.
 
 Uses Seq2SeqTrainer with:
-  - Unicode braille input (U+2800-U+283F) instead of custom tokens
+  - ByT5 byte-level model (no tokenizer vocabulary issues)
+  - Unicode braille input processed as raw UTF-8 bytes
   - Task prefix: "translate Braille to English: "
   - Dynamic padding via DataCollatorForSeq2Seq
   - LR warmup (10%) + cosine decay
@@ -15,24 +16,24 @@ import os
 import torch
 from torch.utils.data import Dataset
 from transformers import (
-    T5ForConditionalGeneration,
-    T5Tokenizer,
+    AutoTokenizer,
+    AutoModelForSeq2SeqLM,
     Seq2SeqTrainer,
     Seq2SeqTrainingArguments,
     DataCollatorForSeq2Seq,
 )
 
-MODEL_NAME = "t5-small"
+MODEL_NAME = "google/byt5-small"
 
 
-def setup_tokenizer(model_name: str = MODEL_NAME) -> T5Tokenizer:
-    """Load T5 tokenizer. No custom tokens needed — Unicode braille is already in vocab."""
-    return T5Tokenizer.from_pretrained(model_name)
+def setup_tokenizer(model_name: str = MODEL_NAME):
+    """Load ByT5 tokenizer. Processes raw UTF-8 bytes — all Unicode handled natively."""
+    return AutoTokenizer.from_pretrained(model_name)
 
 
-def setup_model(tokenizer: T5Tokenizer, model_name: str = MODEL_NAME) -> T5ForConditionalGeneration:
-    """Load T5 model."""
-    return T5ForConditionalGeneration.from_pretrained(model_name)
+def setup_model(tokenizer, model_name: str = MODEL_NAME):
+    """Load ByT5 model."""
+    return AutoModelForSeq2SeqLM.from_pretrained(model_name)
 
 
 class BrailleDataset(Dataset):
@@ -42,8 +43,8 @@ class BrailleDataset(Dataset):
     per-batch by DataCollatorForSeq2Seq.
     """
 
-    def __init__(self, tsv_path: str, tokenizer: T5Tokenizer,
-                 max_source_len: int = 512, max_target_len: int = 256):
+    def __init__(self, tsv_path: str, tokenizer,
+                 max_source_len: int = 1024, max_target_len: int = 256):
         self.tokenizer = tokenizer
         self.max_source_len = max_source_len
         self.max_target_len = max_target_len
@@ -81,7 +82,7 @@ class BrailleDataset(Dataset):
         }
 
 
-def decode_predictions(token_ids: torch.Tensor, tokenizer: T5Tokenizer) -> list[str]:
+def decode_predictions(token_ids: torch.Tensor, tokenizer) -> list[str]:
     """Decode model output token IDs to strings."""
     return tokenizer.batch_decode(token_ids, skip_special_tokens=True)
 
@@ -102,11 +103,11 @@ def train(
     epochs: int = 10,
     batch_size: int = 4,
     grad_accum_steps: int = 8,
-    lr: float = 1e-4,
-    max_source_len: int = 512,
+    lr: float = 1e-3,
+    max_source_len: int = 1024,
     max_target_len: int = 256,
 ):
-    """Fine-tune T5-small on braille→English data using Seq2SeqTrainer."""
+    """Fine-tune ByT5-small on braille→English data using Seq2SeqTrainer."""
     device = get_device()
     print(f"Device: {device}")
 
@@ -167,15 +168,15 @@ def train(
 if __name__ == '__main__':
     import argparse
 
-    parser = argparse.ArgumentParser(description="Train braille→English T5 model")
+    parser = argparse.ArgumentParser(description="Train braille→English ByT5 model")
     parser.add_argument("--train", default="data/prepared/train.tsv")
     parser.add_argument("--val", default="data/prepared/val.tsv")
-    parser.add_argument("--output", default="models/braille-t5-v2")
+    parser.add_argument("--output", default="models/braille-byt5-v3")
     parser.add_argument("--epochs", type=int, default=10)
     parser.add_argument("--batch-size", type=int, default=4)
     parser.add_argument("--grad-accum", type=int, default=8)
-    parser.add_argument("--lr", type=float, default=1e-4)
-    parser.add_argument("--max-source-len", type=int, default=512)
+    parser.add_argument("--lr", type=float, default=1e-3)
+    parser.add_argument("--max-source-len", type=int, default=1024)
     parser.add_argument("--max-target-len", type=int, default=256)
     args = parser.parse_args()
 
