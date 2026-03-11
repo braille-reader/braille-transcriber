@@ -101,9 +101,9 @@ def train(
     val_path: str,
     output_dir: str,
     epochs: int = 10,
-    batch_size: int = 4,
-    grad_accum_steps: int = 8,
-    lr: float = 1e-3,
+    batch_size: int = 1,
+    grad_accum_steps: int = 32,
+    lr: float = 1e-4,
     max_source_len: int = 1024,
     max_target_len: int = 256,
 ):
@@ -127,8 +127,7 @@ def train(
         padding=True,
     )
 
-    use_fp16 = torch.cuda.is_available()
-
+    # ByT5 + fp16 causes numerical overflow — use fp32
     training_args = Seq2SeqTrainingArguments(
         output_dir=output_dir,
         num_train_epochs=epochs,
@@ -144,7 +143,7 @@ def train(
         load_best_model_at_end=True,
         metric_for_best_model="eval_loss",
         logging_steps=50,
-        fp16=use_fp16,
+        fp16=False,
         max_grad_norm=1.0,
     )
 
@@ -173,9 +172,9 @@ if __name__ == '__main__':
     parser.add_argument("--val", default="data/prepared/val.tsv")
     parser.add_argument("--output", default="models/braille-byt5-v3")
     parser.add_argument("--epochs", type=int, default=10)
-    parser.add_argument("--batch-size", type=int, default=4)
-    parser.add_argument("--grad-accum", type=int, default=8)
-    parser.add_argument("--lr", type=float, default=1e-3)
+    parser.add_argument("--batch-size", type=int, default=1)
+    parser.add_argument("--grad-accum", type=int, default=32)
+    parser.add_argument("--lr", type=float, default=1e-4)
     parser.add_argument("--max-source-len", type=int, default=1024)
     parser.add_argument("--max-target-len", type=int, default=256)
     args = parser.parse_args()
