@@ -18,7 +18,7 @@ decode_predictions = _mod.decode_predictions
 
 # Unicode braille with task prefix
 SAMPLE_TSV = (
-    "translate Braille to English: \u2820\u2801\u2807\u2822\u2809\u2811\ttranslate Braille to English: Alice\n"
+    "translate Braille to English: \u2820\u2801\u2807\u2822\u2809\u2811\tAlice\n"
     "translate Braille to English: \u2813\u2800\u2811\th e\n"
     "translate Braille to English: \u282e\u2800\u2809\u2801\u281e\tthe cat\n"
 )
@@ -40,15 +40,13 @@ def tokenizer():
 
 
 class TestSetupTokenizer:
-    def test_no_custom_tokens_needed(self, tokenizer):
-        # Unicode braille characters should be handled by default tokenizer
+    def test_braille_not_unk(self, tokenizer):
+        """ByT5 should tokenize braille Unicode as bytes, not <unk>."""
         text = "translate Braille to English: \u2801\u2803\u2809"
-        encoded = tokenizer(text, return_tensors="pt")
-        ids = encoded["input_ids"][0].tolist()
-        unk_id = tokenizer.unk_token_id
-        non_special = [i for i in ids if i != tokenizer.eos_token_id and i != tokenizer.pad_token_id]
-        # Some braille chars may be UNK in T5's vocab, but the tokenizer should still work
-        assert len(non_special) > 0
+        encoded = tokenizer(text)
+        ids = encoded["input_ids"]
+        # ByT5 uses byte IDs (3-258) plus special tokens — no UNK expected
+        assert tokenizer.unk_token_id not in ids
 
     def test_can_encode_and_decode_english(self, tokenizer):
         text = "Alice was happy."
@@ -59,11 +57,11 @@ class TestSetupTokenizer:
 
 class TestBrailleDataset:
     def test_length(self, tsv_file, tokenizer):
-        ds = BrailleDataset(tsv_file, tokenizer, max_source_len=64, max_target_len=64)
+        ds = BrailleDataset(tsv_file, tokenizer, max_source_len=1024, max_target_len=256)
         assert len(ds) == 3
 
     def test_item_keys(self, tsv_file, tokenizer):
-        ds = BrailleDataset(tsv_file, tokenizer, max_source_len=64, max_target_len=64)
+        ds = BrailleDataset(tsv_file, tokenizer, max_source_len=1024, max_target_len=256)
         item = ds[0]
         assert "input_ids" in item
         assert "attention_mask" in item
@@ -71,14 +69,21 @@ class TestBrailleDataset:
 
     def test_returns_lists_not_tensors(self, tsv_file, tokenizer):
         """Dataset returns lists; DataCollatorForSeq2Seq converts to tensors."""
-        ds = BrailleDataset(tsv_file, tokenizer, max_source_len=64, max_target_len=64)
+        ds = BrailleDataset(tsv_file, tokenizer, max_source_len=1024, max_target_len=256)
         item = ds[0]
         assert isinstance(item["input_ids"], list)
         assert isinstance(item["attention_mask"], list)
         assert isinstance(item["labels"], list)
 
+    def test_braille_produces_more_tokens_than_english(self, tsv_file, tokenizer):
+        """ByT5 byte-level: braille Unicode (3 bytes each) should produce longer sequences."""
+        ds = BrailleDataset(tsv_file, tokenizer, max_source_len=1024, max_target_len=256)
+        item = ds[0]
+        # Source has task prefix + braille bytes, should be longer than target
+        assert len(item["input_ids"]) > len(item["labels"])
+
     def test_all_items_loadable(self, tsv_file, tokenizer):
-        ds = BrailleDataset(tsv_file, tokenizer, max_source_len=64, max_target_len=64)
+        ds = BrailleDataset(tsv_file, tokenizer, max_source_len=1024, max_target_len=256)
         for i in range(len(ds)):
             item = ds[i]
             assert len(item["input_ids"]) > 0
