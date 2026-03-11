@@ -140,11 +140,25 @@ Seq2SeqTrainingArguments(
 
 ---
 
+## Resolution
+
+All issues were resolved by upgrading to **Colab Pro with A100 80GB + bf16**:
+
+- OOM → A100 has 80GB VRAM (only ~10GB used)
+- gradient_checkpointing + fp16 → bf16 on A100 has no such incompatibility
+- fp16 overflow → bf16 has full exponent range, no overflow in attention softmax
+- Training time → 10 epochs completed in ~3 hours on A100
+
+**Final result:** 76.2% exact match on real-world held-out data (0.01 CER). See [v3-training-run.md](v3-training-run.md) for full results.
+
+---
+
 ## Version History
 
-| Version | Model | Input | Precision | Result | Issue |
-|---------|-------|-------|-----------|--------|-------|
-| v1 | T5-small | c0-c63 custom tokens | fp32 | 2.9% exact | Random embeddings, no warmup |
-| v2 | T5-small | Unicode braille | fp16 | 0% exact | All braille → `<unk>` token |
-| v3a | ByT5-small | Unicode braille | fp16 | nan loss | fp16 overflow in attention softmax |
-| v3b | ByT5-small | Unicode braille | fp32 | Not run yet | Needs batch=1, ~15-20hr on T4 |
+| Version | Model | Input | Precision | Hardware | Result | Issue |
+|---------|-------|-------|-----------|----------|--------|-------|
+| v1 | T5-small | c0-c63 custom tokens | fp32 | MacBook M1 | 2.9% exact | Random embeddings, no warmup |
+| v2 | T5-small | Unicode braille | fp16 | Colab T4 | 0% exact | All braille → `<unk>` token |
+| v3a | ByT5-small | Unicode braille | fp16 | Colab T4 | nan loss | fp16 overflow in attention softmax |
+| v3b | ByT5-small | Unicode braille | fp32 | Colab T4 | Not run | Would take ~15-20hr, session limit |
+| **v3c** | **ByT5-small** | **Unicode braille** | **bf16** | **A100 80GB** | **76.2% exact** | **None — success!** |
